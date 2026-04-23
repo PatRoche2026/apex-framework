@@ -660,16 +660,35 @@ YOUR ANALYSIS FRAMEWORK:
 
 SCORING:
 IP_SCORE: X/10
-  9-10: Wide open landscape, strong filing opportunities, no blocking patents
-  7-8: Favorable with manageable risks, clear design-around paths
-  5-6: Mixed — some blocking patents but also opportunities
-  3-4: Challenging — significant blocking patents, limited design-around
-  1-2: Heavily blocked, dominant holders, high litigation risk
+  9-10: Wide open landscape — the patent search returned results but none of
+        them block this target + indication, AND there are strong filing
+        opportunities in obvious white space.
+  7-8:  FAVORABLE freedom to operate. Use this bucket whenever the patent
+        search completed successfully and surfaced no blocking patents for
+        this target + indication — empty results = favorable FTO, not
+        unknown FTO. Also use 7-8 when blocking patents exist but have clear
+        design-around paths or near-term expiry.
+  5-6:  Mixed — some blocking patents AND real filing opportunities.
+  3-4:  Challenging — significant blocking patents with limited design-around.
+  1-2:  Heavily blocked — dominant holders with broad claims, high litigation
+        risk.
+  0:    RESERVED for the case where the patent search itself could not be
+        performed (e.g. no Lens.org API token, API error, network failure).
+        Do NOT use 0 just because the search returned zero hits — that is
+        what 7-8 is for.
+
+If no blocking patents exist for this target + indication (a successful
+search that returned zero relevant hits), score IP_LANDSCAPE 7-8/10
+reflecting favorable freedom to operate. Score 0 only if you cannot perform
+the search at all.
 
 FTO_RISK: HIGH / MEDIUM / LOW
-  LOW: No blocking patents, or all blocking patents expiring within 3 years
-  MEDIUM: Some blocking patents but design-around feasible
-  HIGH: Dominant blocking patents with broad claims, no clear design-around
+  LOW:    Successful search returned no blocking patents, OR all blocking
+          patents expire within 3 years.
+  MEDIUM: Some blocking patents but design-around is feasible.
+  HIGH:   Dominant blocking patents with broad claims and no clear design-
+          around. Also use HIGH when the patent search could not be
+          performed — unknown risk cannot be cleared.
 
 SCORES (rate each dimension 1-10):
 SCIENTIFIC_VALIDITY: X/10
@@ -700,7 +719,11 @@ Example usage:
 
 CRITICAL RULES:
 - NEVER fabricate patent numbers. Only cite patents that appear in the search results.
-- If no patent data was provided (API unavailable), state this and base assessment on domain knowledge, marking all such claims [UNSUPPORTED].
+- The patent-search context you receive will explicitly state whether the search COMPLETED SUCCESSFULLY (possibly with zero hits) or COULD NOT BE PERFORMED. Apply the scoring rubric accordingly:
+    * Search succeeded with zero blocking patents → IP_SCORE 7-8/10 (favorable FTO).
+    * Search could not be performed at all        → IP_SCORE 0/10 (unknown FTO).
+    * Search returned blocking patents            → score on the content of those patents.
+  Do NOT conflate "no blocking patents found" with "no patent data" — the first is a favorable signal, the second is an unknown.
 - Every patent cited must include: document number, assignee, and date.
 - Be specific about patent holders and their filing strategies.
 - Reflection tokens are REQUIRED — reviewers will audit them."""

@@ -76,11 +76,23 @@ async def _lookup_gene_full_name(symbol: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def search_lens_patents(target: str, full_name: str = "", max_results: int = 10) -> list[dict]:
+async def search_lens_patents(
+    target: str, full_name: str = "", max_results: int = 10
+) -> tuple[list[dict], str]:
     """Search Lens.org Patent API for patents mentioning the target gene.
 
     Uses a simple query string search across titles, abstracts, and claims.
-    Falls back to empty list if API unavailable or token not set.
+
+    Returns:
+        (patents, status) where status is one of:
+          - "ok"             search ran successfully (list may be empty — that
+                             is a FAVORABLE freedom-to-operate signal)
+          - "no_token"       LENS_API_TOKEN missing — search could not run
+          - "api_error"      Lens.org returned non-200
+          - "network_error"  timeout or httpx exception
+
+        Callers MUST distinguish "ok + empty" (zero blocking patents = good
+        FTO) from the error statuses (search never ran = unknown FTO).
     """
     # Read token at call time (not module load) to handle Railway env injection
     import os
@@ -88,7 +100,7 @@ async def search_lens_patents(target: str, full_name: str = "", max_results: int
     logger.info(f"Lens.org token: {'SET' if token else 'EMPTY'} (len={len(token)})")
     if not token:
         logger.warning("LENS_API_TOKEN not set — proceeding without patent data")
-        return []
+        return [], "no_token"
 
     # Build query — search by gene symbol and optionally full gene name.
     # Sanitize full_name: NCBI gene lookup sometimes returns messy strings
@@ -141,16 +153,16 @@ async def search_lens_patents(target: str, full_name: str = "", max_results: int
                 logger.info(f"Lens.org: {len(results)} patents returned for '{target}' (total: {total})")
             elif resp.status_code == 403:
                 logger.warning(f"Lens.org 403 Forbidden — token may lack patent search scope")
-                return []
+                return [], "api_error"
             else:
                 logger.warning(f"Lens.org returned {resp.status_code}: {resp.text[:300]}")
-                return []
+                return [], "api_error"
     except httpx.TimeoutException:
         logger.warning("Lens.org API timeout")
-        return []
+        return [], "network_error"
     except Exception as e:
         logger.warning(f"Lens.org API error: {e}")
-        return []
+        return [], "network_error"
 
     patents = []
     for p in results:
@@ -229,7 +241,7 @@ async def search_lens_patents(target: str, full_name: str = "", max_results: int
             "citation_count": citation_count,
         })
 
-    return patents
+    return patents, "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -237,17 +249,54 @@ async def search_lens_patents(target: str, full_name: str = "", max_results: int
 # ---------------------------------------------------------------------------
 
 
-def _format_patents_for_llm(patents: list[dict], target: str) -> str:
-    """Format Lens.org patent search results into structured text for the LLM."""
-    if not patents:
+def _format_patents_for_llm(
+    patents: list[dict], target: str, status: str = "ok"
+) -> str:
+    """Format Lens.org patent search results into structured text for the LLM.
+
+    ``status`` distinguishes a successful-but-empty search (FAVORABLE signal)
+    from a search that never ran (UNKNOWN — cannot assess FTO). The prompt
+    rubric turns these into very different IP_SCORE buckets, so the context
+    text is explicit about which case applies.
+    """
+    # 1. Search could not run — IP_SCORE must be 0 per the scoring rubric.
+    if status in ("no_token", "api_error", "network_error"):
+        reason = {
+            "no_token":       "LENS_API_TOKEN is not configured on this deployment",
+            "api_error":      "the Lens.org API returned a non-200 response",
+            "network_error":  "the Lens.org request timed out or raised a network exception",
+        }[status]
         return (
-            f"PATENT SEARCH RESULTS FOR: {target}\n\n"
-            f"No patents found mentioning '{target}' in patent titles, abstracts, or claims.\n"
-            f"Note: This could indicate an open IP landscape (positive signal) or that "
-            f"patents use different terminology for this target.\n"
-            f"Assessment should be based on general domain knowledge."
+            f"PATENT SEARCH FOR: {target}\n\n"
+            f"STATUS: SEARCH COULD NOT BE PERFORMED — {reason}.\n\n"
+            f"CRITICAL SCORING GUIDANCE: Per the scoring rubric, when the search "
+            f"cannot be performed at all you MUST score IP_SCORE: 0/10 and "
+            f"FTO_RISK: HIGH (unknown risk — cannot be cleared). Mark every "
+            f"IP-landscape claim with [UNSUPPORTED] because you have no patent "
+            f"data to cite. Base narrative commentary on general domain "
+            f"knowledge but do NOT infer a favorable score from the absence of "
+            f"search results — absence of evidence is not evidence of absence "
+            f"when the search never ran.\n"
         )
 
+    # 2. Search ran successfully, zero hits — FAVORABLE freedom to operate.
+    if not patents:
+        return (
+            f"PATENT SEARCH RESULTS FOR: {target}\n"
+            f"Source: Lens.org Patent Database (comprehensive global patent data)\n"
+            f"Total patents found: 0\n\n"
+            f"STATUS: SEARCH COMPLETED SUCCESSFULLY. Zero patents mention "
+            f"'{target}' in titles, abstracts, or claims across the global "
+            f"Lens.org index.\n\n"
+            f"CRITICAL SCORING GUIDANCE: This is a FAVORABLE freedom-to-operate "
+            f"signal — no blocking patents were identified. Per the scoring "
+            f"rubric you MUST score IP_SCORE: 7-8/10 (favorable FTO, clear "
+            f"filing opportunities) and FTO_RISK: LOW. Do NOT score this case "
+            f"as 0 — 0 is reserved for cases where the search itself could "
+            f"not be performed.\n"
+        )
+
+    # 3. Search ran successfully with N hits — let the LLM reason on content.
     lines = [
         f"PATENT SEARCH RESULTS FOR: {target}",
         f"Source: Lens.org Patent Database (comprehensive global patent data)",
@@ -404,13 +453,17 @@ async def ip_attorney_node(state: APEXState) -> dict[str, Any]:
     target = query.strip().split()[0].upper() if query.strip() else "UNKNOWN"
 
     # 1. Search Lens.org for real patent data (symbol-only; thousands of hits)
-    patents = []
+    # search_lens_patents returns (patents, status) so we can tell "search ran
+    # and found zero" (FAVORABLE FTO) apart from "search could not run"
+    # (UNKNOWN FTO). The formatter turns these into different scoring guidance.
+    patents: list[dict] = []
+    search_status = "network_error"
     try:
-        patents = await search_lens_patents(target, full_name="")
+        patents, search_status = await search_lens_patents(target, full_name="")
     except Exception:
         pass
 
-    patent_context = _format_patents_for_llm(patents, target)
+    patent_context = _format_patents_for_llm(patents, target, status=search_status)
 
     # 2. HyDE — generate hypothetical IP assessment to improve retrieval
     hyde_doc = await _generate_hyde_document(target, query, provider=provider)
@@ -484,12 +537,40 @@ async def ip_attorney_node(state: APEXState) -> dict[str, Any]:
                     "IP_SCORE: 5\nFTO_RISK: MEDIUM"
                 )
 
-    # 7. Parse scores and verify citations
-    ip_score_match = re.search(r"IP_SCORE:\s*(\d+)", assessment_text)
-    ip_score = min(int(ip_score_match.group(1)), 10) if ip_score_match else 5
+    # 7. Parse scores and verify citations.
+    # Strict "N/10" match first, then a looser digit match, then a parse-failure
+    # fallback whose default depends on the search status: a successful-but-
+    # empty search means FAVORABLE FTO (default 7); a failed search means we
+    # could not assess FTO (default 0, matching the scoring rubric).
+    ip_score_match = re.search(r"IP_SCORE:\s*(10|[0-9])\s*/\s*10", assessment_text)
+    if ip_score_match:
+        ip_score = int(ip_score_match.group(1))
+    else:
+        loose_match = re.search(r"IP_SCORE:\s*(10|[0-9])\b", assessment_text)
+        if loose_match:
+            ip_score = int(loose_match.group(1))
+        else:
+            if search_status == "ok" and not patents:
+                fallback_score, fallback_reason = 7, "zero blocking patents, favorable FTO"
+            elif search_status in ("no_token", "api_error", "network_error"):
+                fallback_score, fallback_reason = 0, f"search status {search_status}"
+            else:
+                fallback_score, fallback_reason = 5, "malformed LLM output"
+            print(f"[IP Strategy Advisor] IP_SCORE regex miss; defaulting to "
+                  f"{fallback_score} ({fallback_reason}). "
+                  f"Head of assessment: {assessment_text[:200]!r}")
+            ip_score = fallback_score
 
     fto_match = re.search(r"FTO_RISK:\s*(HIGH|MEDIUM|LOW)", assessment_text, re.IGNORECASE)
-    fto_risk = fto_match.group(1).upper() if fto_match else "MEDIUM"
+    if fto_match:
+        fto_risk = fto_match.group(1).upper()
+    else:
+        if search_status == "ok" and not patents:
+            fto_risk = "LOW"
+        elif search_status in ("no_token", "api_error", "network_error"):
+            fto_risk = "HIGH"
+        else:
+            fto_risk = "MEDIUM"
 
     # 8. Patent citation verification (no hallucinated patent numbers)
     citation_check = _verify_cited_patents(assessment_text, patents)
@@ -505,6 +586,7 @@ async def ip_attorney_node(state: APEXState) -> dict[str, Any]:
                 "ip_score": ip_score,
                 "fto_risk": fto_risk,
                 "patents_found": len(patents),
+                "patent_search_status": search_status,
                 "kb_relevance": round(1 - avg_distance, 2),
                 "citations_cited": citation_check["total_cited"],
                 "citations_verified": citation_check["verified"],
