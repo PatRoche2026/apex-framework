@@ -3,51 +3,171 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>APEX — Agent Coordination Protocol</title>
+    <title>APEX — Agentic Pipeline for Executive Decisions</title>
     <meta name="description" content="A multi-agent coordination framework for structured biomedical target evaluation. Built for MIT Media Lab MAS.664.">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <style>
-        :root { --pico-primary: #06b6d4; }
-        body { max-width: 1000px; margin: 0 auto; padding: 2rem 1rem; }
-        .hero { text-align: center; padding: 2rem 0 3rem; }
-        .hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
-        .hero .tagline { color: var(--pico-muted-color); font-size: 1.2rem; }
-        .badges { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; margin: 1rem 0; }
-        .badges img { height: 22px; }
-        nav ul { display: flex; gap: 1rem; list-style: none; padding: 0; flex-wrap: wrap; justify-content: center; }
-        .diagram { background: var(--pico-code-background-color); padding: 1.5rem; border-radius: 0.5rem; overflow-x: auto; }
-        .diagram pre { font-size: 0.85rem; line-height: 1.3; margin: 0; }
-        table { width: 100%; }
-        .screenshot { text-align: center; margin: 2rem 0; }
-        .screenshot img { max-width: 100%; border-radius: 0.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
-        footer { text-align: center; padding: 2rem 0; color: var(--pico-muted-color); border-top: 1px solid var(--pico-muted-border-color); margin-top: 3rem; }
+        :root {
+            --pico-primary: #06b6d4;
+            --pico-primary-hover: #0891b2;
+        }
+
+        /* Container + global spacing */
+        body {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 2rem 1.5rem 4rem;
+        }
+        section {
+            margin-top: 3rem;
+        }
+        section h2 {
+            margin-top: 0;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid var(--pico-muted-border-color);
+        }
+        section h3 {
+            margin-top: 2rem;
+        }
+
+        /* Hero */
+        .hero {
+            text-align: center;
+            padding: 2.5rem 0 2rem;
+            border-bottom: 1px solid var(--pico-muted-border-color);
+        }
+        .hero h1 {
+            font-size: clamp(2rem, 5vw, 3rem);
+            line-height: 1.15;
+            margin: 0 0 0.5rem;
+        }
+        .hero .tagline {
+            color: var(--pico-muted-color);
+            font-size: 1.1rem;
+            margin: 0 0 1.25rem;
+        }
+        .hero .badges {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin: 1rem 0 1.5rem;
+        }
+        .hero .badges img {
+            height: 22px;
+        }
+
+        /* Top nav */
+        nav.top-nav ul {
+            display: flex;
+            gap: 1.25rem;
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        nav.top-nav a {
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        /* Code / diagram blocks — force horizontal scroll when content overflows */
+        pre,
+        .diagram {
+            background: var(--pico-code-background-color);
+            padding: 1.25rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            max-width: 100%;
+        }
+        .diagram pre {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            font-size: 0.8rem;
+            line-height: 1.35;
+            white-space: pre;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+        }
+        code {
+            font-size: 0.95em;
+        }
+
+        /* Tables */
+        .table-wrap {
+            overflow-x: auto;
+            margin: 1rem 0;
+        }
+        table {
+            width: 100%;
+            min-width: 520px;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 0.6rem 0.75rem;
+            text-align: left;
+            vertical-align: top;
+            border-bottom: 1px solid var(--pico-muted-border-color);
+        }
+        th {
+            background: var(--pico-card-background-color);
+            font-weight: 600;
+        }
+        td code {
+            white-space: nowrap;
+        }
+
+        /* Screenshot */
+        .screenshot {
+            text-align: center;
+            margin: 2rem 0;
+        }
+        .screenshot img {
+            max-width: 100%;
+            border-radius: 0.5rem;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 2rem 0 0;
+            color: var(--pico-muted-color);
+            border-top: 1px solid var(--pico-muted-border-color);
+            margin-top: 3rem;
+            font-size: 0.92rem;
+        }
+        footer p {
+            margin: 0.4rem 0;
+        }
     </style>
 </head>
 <body>
 
 <header class="hero">
-    <h1>APEX</h1>
-    <p class="tagline">Agent Coordination Protocol for Biomedical Target Evaluation</p>
+    <h1>APEX — Agentic Pipeline for Executive Decisions</h1>
+    <p class="tagline">A multi-agent coordination framework for structured biomedical target evaluation</p>
     <div class="badges">
         <a href="https://github.com/PatRoche2026/apex-framework"><img src="https://img.shields.io/badge/GitHub-apex--framework-black.svg" alt="GitHub"></a>
         <a href="https://apex-biotech.lovable.app"><img src="https://img.shields.io/badge/Live%20Demo-apex--biotech-purple.svg" alt="Live Demo"></a>
         <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
         <img src="https://img.shields.io/badge/Python-3.11+-blue.svg" alt="Python 3.11+">
     </div>
-    <nav>
+    <nav class="top-nav">
         <ul>
             <li><a href="#what">What It Does</a></li>
             <li><a href="#architecture">Architecture</a></li>
             <li><a href="#protocol">Coordination Protocol</a></li>
             <li><a href="#quickstart">Quick Start</a></li>
             <li><a href="#api">API Reference</a></li>
-            <li><a href="https://apex-biotech.lovable.app" target="_blank">Live Demo →</a></li>
+            <li><a href="https://apex-biotech.lovable.app" target="_blank" rel="noopener">Live Demo →</a></li>
         </ul>
     </nav>
 </header>
 
-<section class="screenshot">
-    <img src="screenshot.png" alt="APEX demo showing agents in mid-debate" onerror="this.style.display='none'">
+<section class="screenshot" id="screenshot">
+    <img src="screenshot.png" alt="APEX demo showing agents in mid-debate" onerror="this.parentNode.style.display='none'">
 </section>
 
 <section id="what">
@@ -58,7 +178,7 @@
 
 <section id="architecture">
     <h2>Architecture</h2>
-    <div class="diagram">
+    <div class="diagram" role="figure" aria-label="APEX pipeline architecture">
 <pre>                              START
                                 │
                                 ▼
@@ -95,7 +215,7 @@
                               │
                               ▼
                       ┌───────────────┐
-                      │ Consensus     │ confidence < 60% ──▶ re-debate
+                      │ Consensus     │ confidence &lt; 60% ──▶ re-debate
                       │ Check         │ confidence ≥ 60% ──▶ END
                       └───────────────┘</pre>
     </div>
@@ -104,19 +224,25 @@
 
 <section id="protocol">
     <h2>Agent coordination protocol</h2>
-    <table>
-        <thead>
-            <tr><th>Phase</th><th>What happens</th><th>Why it matters</th></tr>
-        </thead>
-        <tbody>
-            <tr><td>1. Scout</td><td>Three PubMed query variants, rank hits, PMC enrichment</td><td>Grounds debate in current peer-reviewed evidence</td></tr>
-            <tr><td>2. Parallel assessment</td><td>5 advisors evaluate in parallel with role-specific RAG</td><td>Removes anchoring bias; reveals genuine disagreement</td></tr>
-            <tr><td>3. IP analysis</td><td>Dedicated IP Strategy Advisor runs Lens.org patent analysis</td><td>IP posture often decides target selection</td></tr>
-            <tr><td>4. Adversarial debate</td><td>Rebuttals challenge at least one peer claim with evidence</td><td>Surfaces under-specified claims</td></tr>
-            <tr><td>5. Synthesis</td><td>Portfolio Director writes weighted verdict</td><td>Single traceable decision — not vote count</td></tr>
-            <tr><td>6. Confidence loop</td><td>Re-debate if confidence below threshold</td><td>Reruns are evidence-informed</td></tr>
-        </tbody>
-    </table>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Phase</th>
+                    <th>What happens</th>
+                    <th>Why it matters</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>1. Scout</td><td>Three PubMed query variants, rank hits, PMC enrichment</td><td>Grounds debate in current peer-reviewed evidence</td></tr>
+                <tr><td>2. Parallel assessment</td><td>5 advisors evaluate in parallel with role-specific RAG</td><td>Removes anchoring bias; reveals genuine disagreement</td></tr>
+                <tr><td>3. IP analysis</td><td>Dedicated IP Strategy Advisor runs Lens.org patent analysis</td><td>IP posture often decides target selection</td></tr>
+                <tr><td>4. Adversarial debate</td><td>Rebuttals challenge at least one peer claim with evidence</td><td>Surfaces under-specified claims</td></tr>
+                <tr><td>5. Synthesis</td><td>Portfolio Director writes weighted verdict</td><td>Single traceable decision — not vote count</td></tr>
+                <tr><td>6. Confidence loop</td><td>Re-debate if confidence below threshold</td><td>Reruns are evidence-informed</td></tr>
+            </tbody>
+        </table>
+    </div>
 </section>
 
 <section id="quickstart">
@@ -139,25 +265,34 @@ uvicorn server:app --reload --port 8000</code></pre>
 <section id="api">
     <h2>API reference</h2>
     <h3>REST</h3>
-    <table>
-        <thead><tr><th>Route</th><th>Method</th><th>Description</th></tr></thead>
-        <tbody>
-            <tr><td><code>/health</code></td><td>GET</td><td>Health check</td></tr>
-            <tr><td><code>/personas</code></td><td>GET</td><td>Agent metadata</td></tr>
-            <tr><td><code>/targets</code></td><td>GET</td><td>Demo target catalog</td></tr>
-            <tr><td><code>/evaluate</code></td><td>POST</td><td>Run full evaluation</td></tr>
-            <tr><td><code>/download/ddp/{id}</code></td><td>GET</td><td>Download DDP PDF</td></tr>
-            <tr><td><code>/feedback/{id}</code></td><td>POST</td><td>Submit feedback or approve for DDP</td></tr>
-        </tbody>
-    </table>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>Route</th><th>Method</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>/health</code></td><td>GET</td><td>Health check</td></tr>
+                <tr><td><code>/personas</code></td><td>GET</td><td>Agent metadata</td></tr>
+                <tr><td><code>/targets</code></td><td>GET</td><td>Demo target catalog</td></tr>
+                <tr><td><code>/metrics</code></td><td>GET</td><td>Framework stats</td></tr>
+                <tr><td><code>/evaluate</code></td><td>POST</td><td>Run full evaluation</td></tr>
+                <tr><td><code>/download/ddp/{id}</code></td><td>GET</td><td>Download DDP PDF</td></tr>
+                <tr><td><code>/feedback/{id}</code></td><td>POST</td><td>Submit feedback or approve for DDP</td></tr>
+            </tbody>
+        </table>
+    </div>
     <h3>WebSocket</h3>
-    <table>
-        <thead><tr><th>Route</th><th>Description</th></tr></thead>
-        <tbody>
-            <tr><td><code>/ws/evaluate</code></td><td>Stream evaluation events</td></tr>
-            <tr><td><code>/ws/plan/{id}</code></td><td>Stream DDP planning</td></tr>
-        </tbody>
-    </table>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>Route</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>/ws/evaluate</code></td><td>Stream evaluation events</td></tr>
+                <tr><td><code>/ws/plan/{id}</code></td><td>Stream DDP planning</td></tr>
+            </tbody>
+        </table>
+    </div>
     <p>See the <a href="https://github.com/PatRoche2026/apex-framework#api-reference">full API reference</a> in the repository README.</p>
 </section>
 
