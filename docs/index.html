@@ -12,9 +12,9 @@
             --pico-primary-hover: #0891b2;
         }
 
-        /* Container + global spacing */
+        /* Container + global spacing — 900px centered for readability */
         body {
-            max-width: 1100px;
+            max-width: 900px;
             margin: 0 auto;
             padding: 2rem 1.5rem 4rem;
         }
@@ -44,17 +44,26 @@
         .hero .tagline {
             color: var(--pico-muted-color);
             font-size: 1.1rem;
-            margin: 0 0 1.25rem;
+            margin: 0 0 1.5rem;
         }
         .hero .badges {
             display: flex;
-            gap: 0.5rem;
+            gap: 0.75rem;
             justify-content: center;
+            align-items: center;
             flex-wrap: wrap;
-            margin: 1rem 0 1.5rem;
+            margin: 0 auto 1.5rem;
+            max-width: 640px;
+        }
+        .hero .badges a,
+        .hero .badges img {
+            display: inline-flex;
+            align-items: center;
+            line-height: 1;
         }
         .hero .badges img {
             height: 22px;
+            vertical-align: middle;
         }
 
         /* Top nav */
@@ -81,34 +90,62 @@
             overflow-x: auto;
             max-width: 100%;
         }
+        pre code {
+            display: block;
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+            font-size: 0.85rem;
+            line-height: 1.4;
+            white-space: pre;
+            background: transparent;
+            padding: 0;
+            color: inherit;
+        }
         .diagram pre {
             margin: 0;
             padding: 0;
             background: transparent;
-            font-size: 0.8rem;
-            line-height: 1.35;
-            white-space: pre;
-            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
         }
-        code {
-            font-size: 0.95em;
+        .diagram pre code {
+            font-size: 0.78rem;
+            line-height: 1.35;
+            /* tabular-nums + feature settings keep box-drawing characters aligned */
+            font-variant-numeric: tabular-nums;
+            font-feature-settings: "tnum" 1, "calt" 0, "liga" 0;
+        }
+        :not(pre) > code {
+            font-size: 0.92em;
+            padding: 0.1rem 0.35rem;
+            border-radius: 0.25rem;
         }
 
-        /* Tables */
+        /* Tables — consistent column widths, no page overflow */
         .table-wrap {
             overflow-x: auto;
             margin: 1rem 0;
         }
         table {
             width: 100%;
-            min-width: 520px;
             border-collapse: collapse;
+            table-layout: fixed;
         }
+        /* 3-column protocol table: phase label / description / rationale */
+        table.protocol col.c-phase  { width: 22%; }
+        table.protocol col.c-desc   { width: 42%; }
+        table.protocol col.c-reason { width: 36%; }
+        /* 3-column REST API table: route / method / description */
+        table.api col.c-route  { width: 32%; }
+        table.api col.c-method { width: 14%; }
+        table.api col.c-desc   { width: 54%; }
+        /* 2-column WS table: route / description */
+        table.ws col.c-route { width: 32%; }
+        table.ws col.c-desc  { width: 68%; }
         th, td {
             padding: 0.6rem 0.75rem;
             text-align: left;
             vertical-align: top;
             border-bottom: 1px solid var(--pico-muted-border-color);
+            word-wrap: break-word;
+            overflow-wrap: break-word;
         }
         th {
             background: var(--pico-card-background-color);
@@ -116,6 +153,7 @@
         }
         td code {
             white-space: nowrap;
+            word-wrap: normal;
         }
 
         /* Screenshot */
@@ -179,7 +217,7 @@
 <section id="architecture">
     <h2>Architecture</h2>
     <div class="diagram" role="figure" aria-label="APEX pipeline architecture">
-<pre>                              START
+<pre><code>                              START
                                 │
                                 ▼
                         ┌───────────────┐
@@ -217,7 +255,7 @@
                       ┌───────────────┐
                       │ Consensus     │ confidence &lt; 60% ──▶ re-debate
                       │ Check         │ confidence ≥ 60% ──▶ END
-                      └───────────────┘</pre>
+                      └───────────────┘</code></pre>
     </div>
     <p>After a GO verdict is accepted, a second graph runs in parallel to generate a <strong>Drug Development Plan (DDP)</strong> PDF — each specialist drafts their section and the director synthesizes the final report.</p>
 </section>
@@ -225,7 +263,12 @@
 <section id="protocol">
     <h2>Agent coordination protocol</h2>
     <div class="table-wrap">
-        <table>
+        <table class="protocol">
+            <colgroup>
+                <col class="c-phase">
+                <col class="c-desc">
+                <col class="c-reason">
+            </colgroup>
             <thead>
                 <tr>
                     <th>Phase</th>
@@ -266,7 +309,12 @@ uvicorn server:app --reload --port 8000</code></pre>
     <h2>API reference</h2>
     <h3>REST</h3>
     <div class="table-wrap">
-        <table>
+        <table class="api">
+            <colgroup>
+                <col class="c-route">
+                <col class="c-method">
+                <col class="c-desc">
+            </colgroup>
             <thead>
                 <tr><th>Route</th><th>Method</th><th>Description</th></tr>
             </thead>
@@ -283,7 +331,11 @@ uvicorn server:app --reload --port 8000</code></pre>
     </div>
     <h3>WebSocket</h3>
     <div class="table-wrap">
-        <table>
+        <table class="ws">
+            <colgroup>
+                <col class="c-route">
+                <col class="c-desc">
+            </colgroup>
             <thead>
                 <tr><th>Route</th><th>Description</th></tr>
             </thead>
