@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>APEX — Agent Coordination Protocol</title>
+    <meta name="description" content="A multi-agent coordination framework for structured biomedical target evaluation. Built for MIT Media Lab MAS.664.">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <style>
+        :root { --pico-primary: #06b6d4; }
+        body { max-width: 1000px; margin: 0 auto; padding: 2rem 1rem; }
+        .hero { text-align: center; padding: 2rem 0 3rem; }
+        .hero h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+        .hero .tagline { color: var(--pico-muted-color); font-size: 1.2rem; }
+        .badges { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; margin: 1rem 0; }
+        .badges img { height: 22px; }
+        nav ul { display: flex; gap: 1rem; list-style: none; padding: 0; flex-wrap: wrap; justify-content: center; }
+        .diagram { background: var(--pico-code-background-color); padding: 1.5rem; border-radius: 0.5rem; overflow-x: auto; }
+        .diagram pre { font-size: 0.85rem; line-height: 1.3; margin: 0; }
+        table { width: 100%; }
+        .screenshot { text-align: center; margin: 2rem 0; }
+        .screenshot img { max-width: 100%; border-radius: 0.5rem; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+        footer { text-align: center; padding: 2rem 0; color: var(--pico-muted-color); border-top: 1px solid var(--pico-muted-border-color); margin-top: 3rem; }
+    </style>
+</head>
+<body>
+
+<header class="hero">
+    <h1>APEX</h1>
+    <p class="tagline">Agent Coordination Protocol for Biomedical Target Evaluation</p>
+    <div class="badges">
+        <a href="https://github.com/PatRoche2026/apex-framework"><img src="https://img.shields.io/badge/GitHub-apex--framework-black.svg" alt="GitHub"></a>
+        <a href="https://apex-biotech.lovable.app"><img src="https://img.shields.io/badge/Live%20Demo-apex--biotech-purple.svg" alt="Live Demo"></a>
+        <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License">
+        <img src="https://img.shields.io/badge/Python-3.11+-blue.svg" alt="Python 3.11+">
+    </div>
+    <nav>
+        <ul>
+            <li><a href="#what">What It Does</a></li>
+            <li><a href="#architecture">Architecture</a></li>
+            <li><a href="#protocol">Coordination Protocol</a></li>
+            <li><a href="#quickstart">Quick Start</a></li>
+            <li><a href="#api">API Reference</a></li>
+            <li><a href="https://apex-biotech.lovable.app" target="_blank">Live Demo →</a></li>
+        </ul>
+    </nav>
+</header>
+
+<section class="screenshot">
+    <img src="screenshot.png" alt="APEX demo showing agents in mid-debate" onerror="this.style.display='none'">
+</section>
+
+<section id="what">
+    <h2>What APEX does</h2>
+    <p>APEX simulates a structured executive debate over the viability of a biomedical research target. A research scout gathers evidence from PubMed, five domain specialists (science, technology, clinical, commercial, IP) assess the target from their respective vantage points, debate each other through a round of rebuttals, and a portfolio director synthesizes a <strong>GO / CONDITIONAL GO / NO-GO</strong> verdict with a confidence score.</p>
+    <p>The framework is <strong>domain-agnostic</strong>: swap the knowledge corpus and adjust the agent prompts and it can evaluate anything from a biotech target to a software architecture proposal. The default configuration demonstrates the protocol on publicly-studied knee osteoarthritis (KOA) drug targets.</p>
+</section>
+
+<section id="architecture">
+    <h2>Architecture</h2>
+    <div class="diagram">
+<pre>                              START
+                                │
+                                ▼
+                        ┌───────────────┐
+                        │ Research      │ PubMed search + PMC full-text
+                        │ Scout         │ enrichment on top-ranked papers
+                        └───────┬───────┘
+                                │
+                  ┌─────────────┼──────────────┐
+                  ▼             ▼              ▼
+          ┌─────────────┐ ┌─────────┐  ┌──────────────┐
+          │ Scientific  │ │Technical│  │ Clinical /   │   ← parallel fan-out
+          │ Advisor     │ │Advisor  │  │ Commercial / │
+          └──────┬──────┘ └────┬────┘  │ IP Advisors  │
+                 │             │       └──────┬───────┘
+                 └─────────────┼──────────────┘
+                               ▼
+                       ┌───────────────┐
+                       │ Debate Router │  (fan-in / fan-out barrier)
+                       └───────┬───────┘
+                               │
+                  ┌────────────┼────────────┐
+                  ▼            ▼            ▼         ← parallel fan-out
+          ┌───────────┐ ┌────────────┐ ┌────────┐       (rebuttals)
+          │ Rebuttal  │ │ Rebuttal   │ │  ...   │
+          └─────┬─────┘ └─────┬──────┘ └───┬────┘
+                │             │            │
+                └─────────────┼────────────┘
+                              ▼
+                      ┌───────────────┐
+                      │ Portfolio     │ Weighted synthesis →
+                      │ Director      │ GO / CONDITIONAL GO / NO-GO
+                      └───────┬───────┘
+                              │
+                              ▼
+                      ┌───────────────┐
+                      │ Consensus     │ confidence < 60% ──▶ re-debate
+                      │ Check         │ confidence ≥ 60% ──▶ END
+                      └───────────────┘</pre>
+    </div>
+    <p>After a GO verdict is accepted, a second graph runs in parallel to generate a <strong>Drug Development Plan (DDP)</strong> PDF — each specialist drafts their section and the director synthesizes the final report.</p>
+</section>
+
+<section id="protocol">
+    <h2>Agent coordination protocol</h2>
+    <table>
+        <thead>
+            <tr><th>Phase</th><th>What happens</th><th>Why it matters</th></tr>
+        </thead>
+        <tbody>
+            <tr><td>1. Scout</td><td>Three PubMed query variants, rank hits, PMC enrichment</td><td>Grounds debate in current peer-reviewed evidence</td></tr>
+            <tr><td>2. Parallel assessment</td><td>5 advisors evaluate in parallel with role-specific RAG</td><td>Removes anchoring bias; reveals genuine disagreement</td></tr>
+            <tr><td>3. IP analysis</td><td>Dedicated IP Strategy Advisor runs Lens.org patent analysis</td><td>IP posture often decides target selection</td></tr>
+            <tr><td>4. Adversarial debate</td><td>Rebuttals challenge at least one peer claim with evidence</td><td>Surfaces under-specified claims</td></tr>
+            <tr><td>5. Synthesis</td><td>Portfolio Director writes weighted verdict</td><td>Single traceable decision — not vote count</td></tr>
+            <tr><td>6. Confidence loop</td><td>Re-debate if confidence below threshold</td><td>Reruns are evidence-informed</td></tr>
+        </tbody>
+    </table>
+</section>
+
+<section id="quickstart">
+    <h2>Quick start</h2>
+    <pre><code>git clone https://github.com/PatRoche2026/apex-framework.git
+cd apex-framework
+python -m venv venv
+source venv/bin/activate    # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+cp .env.example .env
+# Add your ANTHROPIC_API_KEY and VOYAGE_API_KEY
+python -m rag.ingest
+uvicorn server:app --reload --port 8000</code></pre>
+    <p>Then try a full evaluation:</p>
+    <pre><code>curl -X POST http://localhost:8000/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"gene": "MMP13", "indication": "Knee Osteoarthritis"}'</code></pre>
+</section>
+
+<section id="api">
+    <h2>API reference</h2>
+    <h3>REST</h3>
+    <table>
+        <thead><tr><th>Route</th><th>Method</th><th>Description</th></tr></thead>
+        <tbody>
+            <tr><td><code>/health</code></td><td>GET</td><td>Health check</td></tr>
+            <tr><td><code>/personas</code></td><td>GET</td><td>Agent metadata</td></tr>
+            <tr><td><code>/targets</code></td><td>GET</td><td>Demo target catalog</td></tr>
+            <tr><td><code>/evaluate</code></td><td>POST</td><td>Run full evaluation</td></tr>
+            <tr><td><code>/download/ddp/{id}</code></td><td>GET</td><td>Download DDP PDF</td></tr>
+            <tr><td><code>/feedback/{id}</code></td><td>POST</td><td>Submit feedback or approve for DDP</td></tr>
+        </tbody>
+    </table>
+    <h3>WebSocket</h3>
+    <table>
+        <thead><tr><th>Route</th><th>Description</th></tr></thead>
+        <tbody>
+            <tr><td><code>/ws/evaluate</code></td><td>Stream evaluation events</td></tr>
+            <tr><td><code>/ws/plan/{id}</code></td><td>Stream DDP planning</td></tr>
+        </tbody>
+    </table>
+    <p>See the <a href="https://github.com/PatRoche2026/apex-framework#api-reference">full API reference</a> in the repository README.</p>
+</section>
+
+<footer>
+    <p>Built for MIT Media Lab <strong>MAS.664 — AI Studio: AI Agents and Agentic Web</strong> (Spring 2026) · Demo Day May 7, 2026</p>
+    <p>Author: Pat Ovando Roche — MIT Sloan Fellows MBA 2026 · <a href="https://github.com/PatRoche2026/apex-framework">GitHub</a> · <a href="./LICENSE">MIT License</a></p>
+</footer>
+
+</body>
+</html>

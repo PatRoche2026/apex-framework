@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Secrets
+.env
+*.secret
+
+# Runtime data
+chromadb_data/
+cache/
+reports/
+*.sqlite3
+
+# Session artifacts (never commit)
+*_result.json
+*_events.json
+*_resp.json
+plan_*.json
+fresh_*.json
+eval_*.json
+approve_*.json
+session_*.json
+
+# Generated PDFs (rebuild via generate_ddp.py)
+reports/*.pdf
+ddp_*.pdf
+ddp_*.txt
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Optional proprietary knowledge overlay (keep out of source control)
+knowledge/proprietary/
