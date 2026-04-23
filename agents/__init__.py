@@ -12,14 +12,9 @@ from dotenv import load_dotenv
 # Load environment variables
 # ---------------------------------------------------------------------------
 
-# Try local .env first, then fall back to hw4-build/.env
 _local_env = Path(__file__).resolve().parent.parent / ".env"
-_hw4_env = Path(__file__).resolve().parent.parent.parent / "hw4-build" / ".env"
-
 if _local_env.exists():
     load_dotenv(_local_env)
-elif _hw4_env.exists():
-    load_dotenv(_hw4_env)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 LENS_API_TOKEN = os.getenv("LENS_API_TOKEN", "")
@@ -49,7 +44,12 @@ ROLE_MODELS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 llm_semaphore = asyncio.Semaphore(3)
-LLM_TIMEOUT_SECONDS = 60
+# Base timeout for specialist-tier (Haiku / GPT-4o-mini / Gemini Flash) calls.
+# Synthesis-tier calls (CSO + Portfolio Director on Sonnet / GPT-4o / Gemini Pro)
+# use the longer timeout — large prompt contexts + 3k-token structured output
+# can take 60-120s.
+LLM_TIMEOUT_SECONDS = 90
+LLM_TIMEOUT_LONG = 180
 
 # ---------------------------------------------------------------------------
 # PubMed configuration

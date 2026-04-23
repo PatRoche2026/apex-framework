@@ -196,6 +196,8 @@
         <ul>
             <li><a href="#what">What It Does</a></li>
             <li><a href="#architecture">Architecture</a></li>
+            <li><a href="#tribunal">Truth Tribunal</a></li>
+            <li><a href="#mention">@Mention Routing</a></li>
             <li><a href="#protocol">Coordination Protocol</a></li>
             <li><a href="#quickstart">Quick Start</a></li>
             <li><a href="#api">API Reference</a></li>
@@ -260,6 +262,65 @@
     <p>After a GO verdict is accepted, a second graph runs in parallel to generate a <strong>Drug Development Plan (DDP)</strong> PDF — each specialist drafts their section and the director synthesizes the final report.</p>
 </section>
 
+<section id="tribunal">
+    <h2>Multi-LLM Truth Tribunal</h2>
+    <p>Running a debate through a single foundation-model family exposes you to that model's blind spots — its training-data gaps, its priors, its refusal patterns. APEX includes a <strong>Truth Tribunal</strong> layer that runs the same evaluation against up to three model families in parallel (Claude / GPT-4o / Gemini), then reconciles their verdicts with a meta-judge.</p>
+    <div class="diagram" role="figure" aria-label="Truth Tribunal flow">
+<pre><code>         POST /evaluate/tribunal
+                │
+   ┌────────────┼────────────┐
+   ▼            ▼            ▼          ← asyncio.gather(return_exceptions=True)
+┌────────┐ ┌────────┐ ┌────────┐
+│ APEX   │ │ APEX   │ │ APEX   │
+│ graph  │ │ graph  │ │ graph  │           same prompts, same RAG,
+│ on     │ │ on     │ │ on     │           different provider
+│Claude  │ │GPT-4o  │ │Gemini  │
+└───┬────┘ └───┬────┘ └───┬────┘
+    │          │          │
+    └──────────┼──────────┘
+               ▼
+       ┌───────────────┐
+       │  Meta-judge   │   synthesizes 2-3 stack verdicts,
+       │ (synthesis-   │   flags singleton claims (likely
+       │  tier model)  │   hallucination vs novel insight),
+       └───────┬───────┘   issues consensus + agreement score
+               ▼
+       Consensus verdict + per-provider cost breakdown</code></pre>
+    </div>
+    <p><strong>Graceful degradation.</strong> Providers without API keys are silently skipped. Providers that error mid-run are captured in the <code>errors</code> field but do not fail the tribunal as long as at least <code>min_survivors</code> (default 2) succeed. If fewer than <code>min_survivors</code> succeed, the endpoint returns <code>503</code> with per-provider diagnostics.</p>
+    <p><strong>Tiered routing via <code>agents/llm_router.py</code>.</strong> Roles are bucketed into a synthesis tier (CSO, Portfolio Director) and a specialist tier (everyone else). Each provider supplies both: Anthropic uses Claude Sonnet 4 / Haiku 4.5, OpenAI uses GPT-4o / GPT-4o-mini, Google uses Gemini 2.5 Pro / Gemini 2.0 Flash. Cost accounting is per-provider.</p>
+    <p><strong>Single-provider mode still works.</strong> Pass <code>"provider": "openai"</code> to the regular <code>/evaluate</code> endpoint to run one evaluation against a single backend — no tribunal overhead.</p>
+</section>
+
+<section id="mention">
+    <h2>Direct agent queries (@mention routing)</h2>
+    <p>Not every question needs a full 90-second multi-agent debate. The <code>/ask</code> endpoint routes a single directed question to one specialist and returns in under 10 seconds.</p>
+    <div class="diagram" role="figure" aria-label="@mention routing flow">
+<pre><code>POST /ask      { "query": "@scientific what is the GWAS evidence for MMP13?" }
+
+   ┌────────────────────┐
+   │ @mention parser    │    resolves @scientific → cso,
+   │ agents/mention.py  │    @clinical → cmo, @ip → ip_attorney, etc.
+   └─────────┬──────────┘
+             ▼
+   ┌────────────────────┐
+   │ RAG retrieve (k=5) │    role-specific ChromaDB collection
+   └─────────┬──────────┘
+             ▼
+   ┌────────────────────┐
+   │ Single-agent LLM   │    short 150-300 word answer, max_tokens=900
+   └─────────┬──────────┘
+             ▼
+   ┌────────────────────┐
+   │ Claim verify       │    extracts [SUPPORTED]/[UNSUPPORTED]/[UNCERTAIN]
+   │ (regex — fast)     │    reflection tokens for inline UI rendering
+   └────────────────────┘</code></pre>
+    </div>
+    <p><strong>Session context.</strong> Pass an existing <code>session_id</code> from a prior <code>/evaluate</code> run and the selected agent receives its own earlier assessment as context, so the answer builds on its prior analysis instead of starting fresh.</p>
+    <p><strong>WebSocket variant.</strong> <code>/ws/ask</code> streams <code>node_complete</code> events (<code>rag_retrieve</code> → <code>single_agent_llm</code> → <code>claim_verify</code>) so the UI can render progressive feedback.</p>
+    <p><strong>Aliases.</strong> The @mention parser accepts role synonyms (<code>@scientific</code>, <code>@technical</code>, <code>@clinical</code>, <code>@commercial</code>, <code>@ip</code>, <code>@director</code>) in addition to the canonical role keys. Call <code>/ask/aliases</code> for the full list.</p>
+</section>
+
 <section id="protocol">
     <h2>Agent coordination protocol</h2>
     <div class="table-wrap">
@@ -302,7 +363,15 @@ uvicorn server:app --reload --port 8000</code></pre>
     <p>Then try a full evaluation:</p>
     <pre><code>curl -X POST http://localhost:8000/evaluate \
   -H "Content-Type: application/json" \
-  -d '{"gene": "MMP13", "indication": "Knee Osteoarthritis"}'</code></pre>
+  -d '{"query": "MMP13 knee osteoarthritis"}'</code></pre>
+    <p>A quick directed question to one agent (&lt;10s):</p>
+    <pre><code>curl -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "@scientific what is the GWAS evidence for MMP13?"}'</code></pre>
+    <p>Or the Multi-LLM Truth Tribunal (needs all three provider keys; ~3-4 min):</p>
+    <pre><code>curl -X POST http://localhost:8000/evaluate/tribunal \
+  -H "Content-Type: application/json" \
+  -d '{"query": "MMP13 knee osteoarthritis"}'</code></pre>
 </section>
 
 <section id="api">
@@ -323,7 +392,10 @@ uvicorn server:app --reload --port 8000</code></pre>
                 <tr><td><code>/personas</code></td><td>GET</td><td>Agent metadata</td></tr>
                 <tr><td><code>/targets</code></td><td>GET</td><td>Demo target catalog</td></tr>
                 <tr><td><code>/metrics</code></td><td>GET</td><td>Framework stats</td></tr>
-                <tr><td><code>/evaluate</code></td><td>POST</td><td>Run full evaluation</td></tr>
+                <tr><td><code>/evaluate</code></td><td>POST</td><td>Run full evaluation (optional <code>provider</code> field)</td></tr>
+                <tr><td><code>/evaluate/tribunal</code></td><td>POST</td><td>Multi-LLM Truth Tribunal (3 parallel + meta-judge)</td></tr>
+                <tr><td><code>/ask</code></td><td>POST</td><td>Directed @mention query to one agent (&lt;10s)</td></tr>
+                <tr><td><code>/ask/aliases</code></td><td>GET</td><td>Alias → canonical-role map</td></tr>
                 <tr><td><code>/download/ddp/{id}</code></td><td>GET</td><td>Download DDP PDF</td></tr>
                 <tr><td><code>/feedback/{id}</code></td><td>POST</td><td>Submit feedback or approve for DDP</td></tr>
             </tbody>
@@ -341,6 +413,7 @@ uvicorn server:app --reload --port 8000</code></pre>
             </thead>
             <tbody>
                 <tr><td><code>/ws/evaluate</code></td><td>Stream evaluation events</td></tr>
+                <tr><td><code>/ws/ask</code></td><td>Stream the 3 nodes of a single-agent @mention query</td></tr>
                 <tr><td><code>/ws/plan/{id}</code></td><td>Stream DDP planning</td></tr>
             </tbody>
         </table>

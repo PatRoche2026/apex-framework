@@ -61,10 +61,15 @@ def _get_llm(model: str) -> ChatAnthropic:
     return _llm_cache[model]
 
 
-async def _call_llm(system_prompt: str, user_prompt: str, role: str) -> tuple[str, float]:
-    """Rate-limited LLM call using role-specific model. Returns (text, cost_usd)."""
-    model = ROLE_MODELS.get(role, LLM_MODEL_STRONG)
-    llm = _get_llm(model)
+async def _call_llm(
+    system_prompt: str,
+    user_prompt: str,
+    role: str,
+    provider: str = "anthropic",
+) -> tuple[str, float]:
+    """Rate-limited, provider-agnostic LLM call. Returns (text, cost_usd)."""
+    from agents.llm_router import get_llm as router_get_llm, estimate_cost_from_response
+    llm = router_get_llm(role, provider=provider, temperature=LLM_TEMPERATURE, max_tokens=3000)
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt),
@@ -75,12 +80,7 @@ async def _call_llm(system_prompt: str, user_prompt: str, role: str) -> tuple[st
                 llm.ainvoke(messages),
                 timeout=LLM_TIMEOUT_SECONDS,
             )
-            usage = getattr(response, "usage_metadata", None) or {}
-            cost = estimate_cost(
-                usage.get("input_tokens", 0),
-                usage.get("output_tokens", 0),
-                model=model,
-            )
+            cost = estimate_cost_from_response(provider, role, response)
             return response.content, cost
         except asyncio.TimeoutError:
             return "[Agent timed out — DDP section incomplete]", 0.0
@@ -168,6 +168,7 @@ def _make_plan_node(role: str):
 
     async def plan_node(state: APEXState) -> dict[str, Any]:
         ts = datetime.now(timezone.utc).isoformat()
+        provider = state.get("provider") or "anthropic"
         gene, indication = _gene_and_indication(state)
 
         # Retrieve RAG context (graceful fallback if unavailable)
@@ -193,7 +194,7 @@ def _make_plan_node(role: str):
             user_prompt = f"{rag_context}\n\n---\n\n{user_prompt}"
 
         # First pass — generate initial DDP section
-        section_text, call_cost = await _call_llm(system_prompt, user_prompt, role=role)
+        section_text, call_cost = await _call_llm(system_prompt, user_prompt, role=role, provider=provider)
         node_cost = call_cost
 
         # Two-pass: check for TOOL_REQUESTS and execute if found (role-filtered)
@@ -209,7 +210,7 @@ def _make_plan_node(role: str):
                         tool_results=tool_results,
                     )
                     section_text, followup_cost = await _call_llm(
-                        system_prompt, followup_prompt, role=role
+                        system_prompt, followup_prompt, role=role, provider=provider
                     )
                     node_cost += followup_cost
             except Exception:
@@ -252,18 +253,13 @@ ip_attorney_plan_node = _make_plan_node("ip_attorney")
 # user_prompt   = DIRECTOR_SYNTHESIS_PROMPT     (DDP synthesis user prompt)
 # ---------------------------------------------------------------------------
 
-_DIRECTOR_MODEL = ROLE_MODELS["portfolio_director"]
-_director_llm = ChatAnthropic(
-    model=_DIRECTOR_MODEL,
-    temperature=LLM_TEMPERATURE,
-    api_key=ANTHROPIC_API_KEY,
-    max_tokens=4000,  # Integrated timeline + budget + risks is the longest output
-)
+_DIRECTOR_MODEL = ROLE_MODELS["portfolio_director"]  # Retained for legacy references
 
 
 async def director_synthesis_node(state: APEXState) -> dict[str, Any]:
     """Portfolio Director synthesises all 4 DDP plan sections into an integrated plan."""
     ts = datetime.now(timezone.utc).isoformat()
+    provider = state.get("provider") or "anthropic"
     gene, indication = _gene_and_indication(state)
 
     # The 4 completed plan sections become the "assessment_summary" for the Director
@@ -281,20 +277,23 @@ async def director_synthesis_node(state: APEXState) -> dict[str, Any]:
         HumanMessage(content=user_prompt),
     ]
 
+    from agents.llm_router import get_llm as router_get_llm, estimate_cost_from_response
+    llm = router_get_llm(
+        "portfolio_director",
+        provider=provider,
+        temperature=LLM_TEMPERATURE,
+        max_tokens=4000,
+    )
+
     call_cost = 0.0
     async with llm_semaphore:
         try:
             response = await asyncio.wait_for(
-                _director_llm.ainvoke(messages),
+                llm.ainvoke(messages),
                 timeout=LLM_TIMEOUT_SECONDS,
             )
             synthesis_text = response.content
-            usage = getattr(response, "usage_metadata", None) or {}
-            call_cost = estimate_cost(
-                usage.get("input_tokens", 0),
-                usage.get("output_tokens", 0),
-                model=_DIRECTOR_MODEL,
-            )
+            call_cost = estimate_cost_from_response(provider, "portfolio_director", response)
         except asyncio.TimeoutError:
             synthesis_text = "[DDP Director timed out — synthesis incomplete]"
         except Exception as e:

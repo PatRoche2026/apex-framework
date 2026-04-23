@@ -49,7 +49,7 @@ _llm_cache: dict[str, ChatAnthropic] = {}
 
 
 def _get_llm(model: str) -> ChatAnthropic:
-    """Get or create a cached LLM instance for the given model."""
+    """Legacy Anthropic-only helper. Retained for backward-compat callers."""
     if model not in _llm_cache:
         _llm_cache[model] = ChatAnthropic(
             model=model,
@@ -131,16 +131,23 @@ def parse_verdict(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _call_llm(system_prompt: str, user_prompt: str, role: str = "cso") -> tuple[str, float]:
+async def _call_llm(
+    system_prompt: str,
+    user_prompt: str,
+    role: str = "cso",
+    provider: str = "anthropic",
+) -> tuple[str, float]:
     """Call LLM with rate limit semaphore and timeout protection.
 
-    Uses role-specific model (Sonnet for CSO/Director, Haiku for others).
+    Provider-agnostic: routes through agents.llm_router so the Truth Tribunal
+    can run the same node code against anthropic, openai, or google backends.
+    Tier (synthesis vs specialist) is determined per-role inside the router.
 
     Returns:
         (response_text, estimated_cost_usd)
     """
-    model = ROLE_MODELS.get(role, LLM_MODEL_STRONG)
-    llm = _get_llm(model)
+    from agents.llm_router import get_llm as router_get_llm, estimate_cost_from_response
+    llm = router_get_llm(role, provider=provider, temperature=LLM_TEMPERATURE, max_tokens=2048)
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_prompt),
@@ -151,23 +158,26 @@ async def _call_llm(system_prompt: str, user_prompt: str, role: str = "cso") -> 
                 llm.ainvoke(messages),
                 timeout=LLM_TIMEOUT_SECONDS,
             )
-            # Extract token usage for cost estimation
-            usage = getattr(response, "usage_metadata", None) or {}
-            input_tokens = usage.get("input_tokens", 0)
-            output_tokens = usage.get("output_tokens", 0)
-            cost = estimate_cost(input_tokens, output_tokens, model=model)
+            cost = estimate_cost_from_response(provider, role, response)
             return response.content, cost
         except asyncio.TimeoutError:
-            return "[Agent timed out after 60s — proceeding with available assessments]", 0.0
+            return "[Agent timed out — proceeding with available assessments]", 0.0
         except Exception as e:
             err_str = str(e).lower()
             if "credit balance" in err_str or "billing" in err_str or "insufficient" in err_str:
-                return "[ANTHROPIC_CREDIT_ERROR] API credits need renewal", 0.0
-            elif "rate limit" in err_str or "rate_limit" in err_str:
-                return "[ANTHROPIC_RATE_LIMIT] Too many requests", 0.0
-            elif "authentication" in err_str or "invalid api key" in err_str or "api_key" in err_str:
-                return "[ANTHROPIC_AUTH_ERROR] API key invalid", 0.0
-            return f"[Agent error: {str(e)[:200]}]", 0.0
+                return "[PROVIDER_CREDIT_ERROR] API credits need renewal", 0.0
+            elif "rate limit" in err_str or "rate_limit" in err_str or "429" in err_str:
+                return "[PROVIDER_RATE_LIMIT] Too many requests", 0.0
+            elif (
+                "authentication_error" in err_str
+                or "invalid api key" in err_str
+                or "invalid x-api-key" in err_str
+                or "401 unauthorized" in err_str
+                or "status_code=401" in err_str
+            ):
+                return "[PROVIDER_AUTH_ERROR] API key invalid", 0.0
+            print(f"[Agent {role}] non-fatal error: {type(e).__name__}: {str(e)[:300]}")
+            return f"[Agent {role} transient error: {type(e).__name__}]", 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +197,7 @@ def _make_assess_node(role: str):
 
     async def assess_node(state: APEXState) -> dict[str, Any]:
         ts = datetime.now(timezone.utc).isoformat()
+        provider = state.get("provider") or "anthropic"
 
         # Retrieve RAG context via CRAG (quality-graded + PubMed escalation)
         rag_context = ""
@@ -215,7 +226,7 @@ def _make_assess_node(role: str):
         if rag_context:
             user_prompt = f"{rag_context}\n\n---\n\n{user_prompt}"
 
-        assessment, call_cost = await _call_llm(system_prompt, user_prompt, role=role)
+        assessment, call_cost = await _call_llm(system_prompt, user_prompt, role=role, provider=provider)
         node_cost = call_cost
 
         # Two-pass: check for TOOL_REQUESTS and execute if found (role-filtered)
@@ -230,7 +241,7 @@ def _make_assess_node(role: str):
                         query=state["query"],
                         tool_results=tool_results,
                     )
-                    assessment, followup_cost = await _call_llm(system_prompt, followup_prompt, role=role)
+                    assessment, followup_cost = await _call_llm(system_prompt, followup_prompt, role=role, provider=provider)
                     node_cost += followup_cost
             except Exception:
                 pass  # Tool failure should not block assessment
@@ -287,6 +298,7 @@ def _make_rebuttal_node(role: str):
     async def rebuttal_node(state: APEXState) -> dict[str, Any]:
         ts = datetime.now(timezone.utc).isoformat()
         round_num = state.get("debate_round", 0) + 1
+        provider = state.get("provider") or "anthropic"
 
         # Build system prompt with optional sharpen instruction for round 2+
         sharpen = ""
@@ -315,7 +327,7 @@ def _make_rebuttal_node(role: str):
             ip_assessment=state.get("ip_assessment", "(IP assessment not available)"),
         )
 
-        rebuttal, call_cost = await _call_llm(system_prompt, user_prompt, role=role)
+        rebuttal, call_cost = await _call_llm(system_prompt, user_prompt, role=role, provider=provider)
         scores = parse_scores(rebuttal)
 
         result: dict = {

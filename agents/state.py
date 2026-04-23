@@ -22,6 +22,7 @@ class APEXState(TypedDict):
 
     # --- Input ---
     query: str
+    provider: str                                            # LLM provider: anthropic | openai | google
 
     # --- Scout stage ---
     scout_data: str                                          # Prose summary of PubMed findings

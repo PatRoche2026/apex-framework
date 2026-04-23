@@ -141,10 +141,18 @@ def build_graph() -> StateGraph:
 # ---------------------------------------------------------------------------
 
 
-def make_initial_state(query: str) -> APEXState:
-    """Create a fresh initial state for a given query."""
+def make_initial_state(query: str, provider: str = "anthropic") -> APEXState:
+    """Create a fresh initial state for a given query.
+
+    Args:
+        query: the target + indication query text.
+        provider: LLM backend to use (anthropic | openai | google). Defaults
+            to anthropic for backward compatibility. The Truth Tribunal
+            orchestrator passes a different provider per parallel run.
+    """
     return APEXState(
         query=query,
+        provider=provider,
         scout_data="",
         scout_sources=[],
         cso_assessment="",

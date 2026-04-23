@@ -27,16 +27,12 @@ from agents.state import APEXState
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# LLM instance — IP Attorney uses Haiku (fast model)
+# LLM instance — routed per-provider via agents.llm_router. IP Strategy Advisor
+# runs at the specialist tier (Haiku / GPT-4o-mini / Gemini Flash depending on
+# provider).
 # ---------------------------------------------------------------------------
 
-_IP_MODEL = ROLE_MODELS["ip_attorney"]
-_llm = ChatAnthropic(
-    model=_IP_MODEL,
-    temperature=LLM_TEMPERATURE,
-    api_key=ANTHROPIC_API_KEY,
-    max_tokens=2500,
-)
+_IP_MODEL = ROLE_MODELS["ip_attorney"]  # Retained for legacy references
 
 # ---------------------------------------------------------------------------
 # Gene name lookup (NCBI)
@@ -296,12 +292,14 @@ def _format_patents_for_llm(patents: list[dict], target: str) -> str:
 CRAG_QUALITY_THRESHOLD = 0.7
 
 
-async def _generate_hyde_document(target: str, query: str) -> str:
+async def _generate_hyde_document(target: str, query: str, provider: str = "anthropic") -> str:
     """Generate a hypothetical IP assessment to improve retrieval quality.
 
     The hypothetical doc's embedding matches chunks that semantically look like
     good IP assessments, not just keyword matches on the target name.
     """
+    from agents.llm_router import get_llm as router_get_llm
+    llm = router_get_llm("ip_attorney", provider=provider, temperature=LLM_TEMPERATURE, max_tokens=1500)
     hyde_prompt = (
         f"Write a concise patent landscape analysis for the gene target {target} "
         f"as a potential therapeutic target for {query}. Cover: existing patent "
@@ -312,7 +310,7 @@ async def _generate_hyde_document(target: str, query: str) -> str:
     )
     try:
         response = await asyncio.wait_for(
-            _llm.ainvoke([HumanMessage(content=hyde_prompt)]),
+            llm.ainvoke([HumanMessage(content=hyde_prompt)]),
             timeout=30,
         )
         return response.content
@@ -398,8 +396,9 @@ def _verify_cited_patents(assessment_text: str, patents: list[dict]) -> dict:
 
 
 async def ip_attorney_node(state: APEXState) -> dict[str, Any]:
-    """IP Attorney: Lens.org patents + HyDE + CRAG + Self-RAG + citation verification."""
+    """IP Strategy Advisor: Lens.org patents + HyDE + CRAG + Self-RAG + citation verification."""
     ts = datetime.now(timezone.utc).isoformat()
+    provider = state.get("provider") or "anthropic"
 
     query = state["query"]
     target = query.strip().split()[0].upper() if query.strip() else "UNKNOWN"
@@ -414,7 +413,7 @@ async def ip_attorney_node(state: APEXState) -> dict[str, Any]:
     patent_context = _format_patents_for_llm(patents, target)
 
     # 2. HyDE — generate hypothetical IP assessment to improve retrieval
-    hyde_doc = await _generate_hyde_document(target, query)
+    hyde_doc = await _generate_hyde_document(target, query, provider=provider)
 
     # 3. Retrieve from ip_attorney ChromaDB collection using HyDE embedding
     ip_law_context, avg_distance = await _retrieve_ip_context(hyde_doc, k=6)
@@ -451,34 +450,37 @@ async def ip_attorney_node(state: APEXState) -> dict[str, Any]:
         HumanMessage(content=user_prompt),
     ]
 
+    from agents.llm_router import get_llm as router_get_llm, estimate_cost_from_response
+    llm = router_get_llm(
+        "ip_attorney",
+        provider=provider,
+        temperature=LLM_TEMPERATURE,
+        max_tokens=2500,
+    )
+
     call_cost = 0.0
     async with llm_semaphore:
         try:
             response = await asyncio.wait_for(
-                _llm.ainvoke(messages),
+                llm.ainvoke(messages),
                 timeout=LLM_TIMEOUT_SECONDS,
             )
             assessment_text = response.content
-            usage = getattr(response, "usage_metadata", None) or {}
-            call_cost = estimate_cost(
-                usage.get("input_tokens", 0),
-                usage.get("output_tokens", 0),
-                model=_IP_MODEL,
-            )
+            call_cost = estimate_cost_from_response(provider, "ip_attorney", response)
         except asyncio.TimeoutError:
             assessment_text = (
-                "[IP Attorney timed out — defaulting to MEDIUM FTO risk]\n\n"
+                "[IP Strategy Advisor timed out — defaulting to MEDIUM FTO risk]\n\n"
                 "IP_SCORE: 5\nFTO_RISK: MEDIUM"
             )
         except Exception as e:
             err_str = str(e).lower()
             if "credit balance" in err_str or "billing" in err_str:
-                assessment_text = "[ANTHROPIC_CREDIT_ERROR] API credits need renewal"
+                assessment_text = "[PROVIDER_CREDIT_ERROR] API credits need renewal"
             elif "rate limit" in err_str:
-                assessment_text = "[ANTHROPIC_RATE_LIMIT] Too many requests"
+                assessment_text = "[PROVIDER_RATE_LIMIT] Too many requests"
             else:
                 assessment_text = (
-                    f"[IP Attorney error: {str(e)[:200]}]\n\n"
+                    f"[IP Strategy Advisor error: {str(e)[:200]}]\n\n"
                     "IP_SCORE: 5\nFTO_RISK: MEDIUM"
                 )
 

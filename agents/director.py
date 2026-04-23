@@ -13,7 +13,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agents import (
     ANTHROPIC_API_KEY,
     LLM_TEMPERATURE,
-    LLM_TIMEOUT_SECONDS,
+    LLM_TIMEOUT_LONG,
     ROLE_MODELS,
     estimate_cost,
     llm_semaphore,
@@ -24,16 +24,12 @@ from agents.state import APEXState
 from config import SCORING_DIMENSIONS
 
 # ---------------------------------------------------------------------------
-# LLM instance — Portfolio Director always uses the synthesis model (strong)
+# LLM instance — Portfolio Director uses the synthesis-tier model for whichever
+# provider is selected on the state. The router picks the heavy model (Sonnet /
+# GPT-4o / Gemini Pro) automatically based on the "portfolio_director" role.
 # ---------------------------------------------------------------------------
 
-_DIRECTOR_MODEL = ROLE_MODELS["portfolio_director"]
-_llm = ChatAnthropic(
-    model=_DIRECTOR_MODEL,
-    temperature=LLM_TEMPERATURE,
-    api_key=ANTHROPIC_API_KEY,
-    max_tokens=3000,
-)
+_DIRECTOR_MODEL = ROLE_MODELS["portfolio_director"]  # Retained for legacy cost calc
 
 # ---------------------------------------------------------------------------
 # Weighted composite score calculation
@@ -83,6 +79,7 @@ def compute_weighted_score(executive_scores: dict) -> dict:
 async def portfolio_director_node(state: APEXState) -> dict[str, Any]:
     """Portfolio Director: synthesize all assessments + rebuttals, issue verdict."""
     ts = datetime.now(timezone.utc).isoformat()
+    provider = state.get("provider") or "anthropic"
 
     # Reviewer feedback section (human-in-the-loop)
     ceo_feedback_section = ""
@@ -109,32 +106,46 @@ async def portfolio_director_node(state: APEXState) -> dict[str, Any]:
         HumanMessage(content=user_prompt),
     ]
 
+    from agents.llm_router import get_llm as router_get_llm, estimate_cost_from_response
+    llm = router_get_llm(
+        "portfolio_director",
+        provider=provider,
+        temperature=LLM_TEMPERATURE,
+        max_tokens=3000,
+    )
+
     call_cost = 0.0
     async with llm_semaphore:
         try:
             response = await asyncio.wait_for(
-                _llm.ainvoke(messages),
-                timeout=LLM_TIMEOUT_SECONDS,
+                llm.ainvoke(messages),
+                timeout=LLM_TIMEOUT_LONG,
             )
             verdict_text = response.content
-            usage = getattr(response, "usage_metadata", None) or {}
-            call_cost = estimate_cost(
-                usage.get("input_tokens", 0),
-                usage.get("output_tokens", 0),
-                model=_DIRECTOR_MODEL,
-            )
+            call_cost = estimate_cost_from_response(provider, "portfolio_director", response)
         except asyncio.TimeoutError:
             verdict_text = "[Portfolio Director timed out — defaulting to CONDITIONAL GO]"
         except Exception as e:
             err_str = str(e).lower()
             if "credit balance" in err_str or "billing" in err_str or "insufficient" in err_str:
-                verdict_text = "[ANTHROPIC_CREDIT_ERROR] API credits need renewal"
-            elif "rate limit" in err_str or "rate_limit" in err_str:
-                verdict_text = "[ANTHROPIC_RATE_LIMIT] Too many requests — please retry"
-            elif "authentication" in err_str or "invalid api key" in err_str or "api_key" in err_str:
-                verdict_text = "[ANTHROPIC_AUTH_ERROR] API key invalid"
+                verdict_text = "[PROVIDER_CREDIT_ERROR] API credits need renewal"
+            elif "rate limit" in err_str or "rate_limit" in err_str or "429" in err_str:
+                verdict_text = "[PROVIDER_RATE_LIMIT] Too many requests — please retry"
+            elif (
+                "authentication_error" in err_str
+                or "invalid api key" in err_str
+                or "invalid x-api-key" in err_str
+                or "401 unauthorized" in err_str
+                or "status_code=401" in err_str
+            ):
+                verdict_text = "[PROVIDER_AUTH_ERROR] API key invalid"
             else:
-                verdict_text = f"[Portfolio Director error: {str(e)[:200]}]"
+                print(f"[Portfolio Director] non-fatal error: {type(e).__name__}: {str(e)[:300]}")
+                verdict_text = (
+                    f"[Portfolio Director transient error: {type(e).__name__}]\n\n"
+                    "The director could not synthesize. Defaulting to CONDITIONAL GO "
+                    "so the session can complete; please re-run for a full verdict."
+                )
 
     # Parse director's own scores
     director_scores = parse_scores(verdict_text)

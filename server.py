@@ -59,7 +59,59 @@ class EvaluateRequest(BaseModel):
     query: str = Field(
         ...,
         min_length=3,
-        description="Drug target evaluation query (e.g. 'OSMR ulcerative colitis')",
+        description="Drug target evaluation query (e.g. 'MMP13 knee osteoarthritis')",
+    )
+    provider: Optional[str] = Field(
+        default=None,
+        description="Optional LLM provider: anthropic | openai | google. Defaults "
+                    "to anthropic. Requires the corresponding API key to be set.",
+    )
+
+
+class TribunalRequest(BaseModel):
+    query: str = Field(
+        ...,
+        min_length=3,
+        description="Drug target evaluation query. Runs the full APEX pipeline "
+                    "against multiple foundation-model providers in parallel and "
+                    "reconciles their verdicts with a meta-judge.",
+    )
+    providers: Optional[list[str]] = Field(
+        default=None,
+        description="Explicit providers to run (anthropic/openai/google). Defaults "
+                    "to every provider whose API key is configured. Providers without "
+                    "keys are skipped silently.",
+    )
+    min_survivors: int = Field(
+        default=2,
+        ge=1,
+        le=3,
+        description="Minimum surviving providers required before the meta-judge runs. "
+                    "If fewer succeed the endpoint returns 503.",
+    )
+
+
+class AskRequest(BaseModel):
+    query: str = Field(
+        ...,
+        min_length=3,
+        description="Question text. If it contains an @mention like '@cso' or "
+                    "'@scientific', the directed role is routed to that agent. If "
+                    "no @mention is present, the explicit 'role' field is used.",
+    )
+    role: Optional[str] = Field(
+        default=None,
+        description="Optional explicit role override (cso/cto/cmo/cbo/ip_attorney/portfolio_director). "
+                    "Ignored if the query contains an @mention.",
+    )
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Optional prior evaluation session id. When set, the "
+                    "agent's prior assessment from that session is injected as context.",
+    )
+    provider: Optional[str] = Field(
+        default=None,
+        description="Optional LLM provider: anthropic | openai | google. Defaults to anthropic.",
     )
 
 
@@ -459,10 +511,15 @@ async def get_metrics():
 
 @app.post("/evaluate")
 async def evaluate(req: EvaluateRequest):
-    """Run a full synchronous evaluation. Returns the complete result."""
+    """Run a full synchronous evaluation. Returns the complete result.
+
+    Pass ``provider`` in the request body to override the default LLM backend
+    (anthropic, openai, or google). The corresponding API key must be set.
+    """
     session_id = str(uuid.uuid4())
+    provider = (req.provider or "anthropic").lower()
     graph = build_graph()
-    state = make_initial_state(req.query)
+    state = make_initial_state(req.query, provider=provider)
 
     result = await graph.ainvoke(state)
 
@@ -470,6 +527,7 @@ async def evaluate(req: EvaluateRequest):
     sessions[session_id] = {
         "session_id": session_id,
         "query": req.query,
+        "provider": provider,
         "status": "complete",
         "result": result,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -478,6 +536,7 @@ async def evaluate(req: EvaluateRequest):
     return {
         "session_id": session_id,
         "query": req.query,
+        "provider": provider,
         "confidence_score": result.get("confidence_score", 0),
         "debate_rounds": result.get("debate_round", 0),
         "verdict": result.get("portfolio_verdict", ""),
@@ -498,6 +557,311 @@ async def evaluate(req: EvaluateRequest):
         "activity_log": result.get("activity_log", []),
         "estimated_cost_usd": _sum_costs(result),
     }
+
+
+@app.post("/evaluate/tribunal")
+async def evaluate_tribunal(req: TribunalRequest):
+    """Run the Multi-LLM Truth Tribunal.
+
+    Kicks off the full APEX evaluation graph against each configured provider
+    (anthropic/openai/google) in parallel, then synthesizes their verdicts with
+    a meta-judge. Requires at least ``min_survivors`` (default 2) to produce a
+    tribunal result; otherwise returns 503 with per-provider errors so the
+    caller can see which backends failed.
+    """
+    from agents.tribunal import run_tribunal
+
+    session_id = str(uuid.uuid4())
+    try:
+        tribunal = await run_tribunal(
+            req.query,
+            providers=req.providers,
+            min_survivors=req.min_survivors,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    # Strip _raw_state from the wire payload (it's heavy LangGraph internals)
+    # but keep it in the session store so follow-on endpoints (e.g. export,
+    # DDP trigger) can pick the winning provider's full state.
+    per_provider_public: dict[str, Any] = {}
+    per_provider_raw: dict[str, Any] = {}
+    for provider, result in tribunal["per_provider_results"].items():
+        per_provider_raw[provider] = result.get("_raw_state", {})
+        public = {k: v for k, v in result.items() if k != "_raw_state"}
+        per_provider_public[provider] = public
+
+    sessions[session_id] = {
+        "session_id": session_id,
+        "query": req.query,
+        "status": "complete",
+        "kind": "tribunal",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "_per_provider_raw": per_provider_raw,
+        "tribunal": {**tribunal, "per_provider_results": per_provider_public},
+    }
+
+    # Pick a canonical "result" for compatibility with /results/{session_id} and
+    # downstream endpoints that expect a single APEXState: prefer the judge's
+    # provider if it ran, else the first survivor.
+    synthesis = tribunal["tribunal_synthesis"]
+    canonical_provider = synthesis.get("meta_judge_provider")
+    if canonical_provider not in per_provider_raw:
+        canonical_provider = tribunal["providers_succeeded"][0]
+    sessions[session_id]["result"] = per_provider_raw[canonical_provider]
+    sessions[session_id]["canonical_provider"] = canonical_provider
+
+    return {
+        "session_id": session_id,
+        "query": req.query,
+        "providers_attempted": tribunal["providers_attempted"],
+        "providers_succeeded": tribunal["providers_succeeded"],
+        "providers_failed": tribunal["providers_failed"],
+        "per_provider_results": per_provider_public,
+        "tribunal_synthesis": synthesis,
+        "canonical_provider": canonical_provider,
+        "total_cost_usd": tribunal["total_cost_usd"],
+        "errors": tribunal["errors"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# @Mention Routing — direct a single question to one agent
+# Target latency: <10s.  Does not trigger the full debate graph.
+# ---------------------------------------------------------------------------
+
+_ASK_VALID_ROLES = ("cso", "cto", "cmo", "cbo", "ip_attorney", "portfolio_director")
+
+
+def _resolve_ask_target(
+    query_text: str, role_override: Optional[str]
+) -> tuple[Optional[str], str, Optional[str]]:
+    """Return (canonical_role, stripped_query, raw_alias) for an ask request.
+
+    Priority:
+      1. @mention embedded in ``query_text`` (first valid alias wins).
+      2. Explicit ``role_override`` field.
+      3. None -> caller should 400.
+    """
+    from agents.mention import parse_mention
+    m = parse_mention(query_text)
+    if m.role:
+        return m.role, m.query, m.raw_alias
+    if role_override and role_override.lower() in _ASK_VALID_ROLES:
+        return role_override.lower(), query_text.strip(), None
+    return None, query_text.strip(), None
+
+
+@app.get("/ask/aliases")
+def ask_aliases():
+    """Return the alias -> canonical role map for the frontend's @mention UI."""
+    from agents.mention import list_aliases
+    return {
+        "roles": list(_ASK_VALID_ROLES),
+        "aliases": list_aliases(),
+    }
+
+
+@app.post("/ask")
+async def ask_single_agent(req: AskRequest):
+    """Route a directed question to a single agent and return the answer.
+
+    Example request body:
+        {"query": "@CSO what is the GWAS evidence for MMP13 in osteoarthritis?"}
+
+    Response includes the agent's answer, extracted reflection-token claims
+    ([SUPPORTED]/[UNSUPPORTED]/[UNCERTAIN]), and persona metadata for UI use.
+    """
+    role, stripped, alias = _resolve_ask_target(req.query, req.role)
+    if role is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No valid @mention found in the query and no 'role' field provided. "
+                "Add '@cso' / '@cto' / '@cmo' / '@cbo' / '@ip' / '@director' "
+                "(or category aliases like @scientific / @technical / @clinical / "
+                "@commercial / @patent / @portfolio) or set the 'role' field explicitly."
+            ),
+        )
+
+    if len(stripped) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Query is too short after stripping the @mention. Include a real question.",
+        )
+
+    # Fetch prior assessment if session_id is valid and has this role's output.
+    prior = None
+    if req.session_id:
+        session_record = sessions.get(req.session_id)
+        if session_record:
+            from agents.ask_graph import extract_prior_assessment
+            prior = extract_prior_assessment(session_record, role)
+
+    provider = (req.provider or "anthropic").lower()
+    from agents.ask_graph import run_ask
+    result = await run_ask(
+        role=role,
+        query=stripped,
+        provider=provider,
+        session_id=req.session_id,
+        prior_assessment=prior,
+    )
+    result["mention_alias"] = alias  # echoed back for UI display
+    result["provider"] = provider
+
+    # Detect sentinel errors -> 502/429 so clients can distinguish from content.
+    ans = result.get("answer", "")
+    if ans.startswith("[PROVIDER_CREDIT_ERROR]") or ans.startswith("[PROVIDER_AUTH_ERROR]"):
+        raise HTTPException(status_code=502, detail={"code": "provider_error", "result": result})
+    if ans.startswith("[PROVIDER_RATE_LIMIT]"):
+        raise HTTPException(status_code=429, detail={"code": "rate_limit", "result": result})
+
+    return result
+
+
+@app.websocket("/ws/ask")
+async def ws_ask(websocket: WebSocket):
+    """WebSocket variant of /ask. Streams node_complete events per step.
+
+    Client sends once:
+        {"query": "@CSO GWAS evidence for MMP13?", "session_id": "<optional>",
+         "provider": "anthropic"}
+
+    Server streams:
+        {"type": "ask_started", "role": "cso", "query": "...", ...}
+        {"type": "node_complete", "node": "rag_retrieve", ...}
+        {"type": "node_complete", "node": "single_agent_llm", ...}
+        {"type": "node_complete", "node": "claim_verify", ...}
+        {"type": "ask_complete", "result": {...}}  (mirrors REST /ask output)
+    """
+    await websocket.accept()
+    keepalive_task = asyncio.create_task(_ws_keepalive(websocket))
+    try:
+        data = await websocket.receive_json()
+        raw_query = (data.get("query") or "").strip()
+        role_override = data.get("role")
+        session_id_in = data.get("session_id")
+        provider = (data.get("provider") or "anthropic").lower()
+
+        if len(raw_query) < 3:
+            await websocket.send_json({
+                "type": "error",
+                "data": {"message": "Query must be at least 3 characters"},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            await websocket.close()
+            return
+
+        role, stripped, alias = _resolve_ask_target(raw_query, role_override)
+        if role is None:
+            await websocket.send_json({
+                "type": "error",
+                "data": {
+                    "code": "no_mention",
+                    "message": "No valid @mention found. Use @cso/@cto/@cmo/@cbo/@ip/@director.",
+                },
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            await websocket.close()
+            return
+
+        # Fetch prior assessment if session is known.
+        prior = None
+        if session_id_in and session_id_in in sessions:
+            from agents.ask_graph import extract_prior_assessment
+            prior = extract_prior_assessment(sessions[session_id_in], role)
+
+        persona = AGENT_PERSONAS.get(role, {})
+        await websocket.send_json({
+            "type": "ask_started",
+            "role": role,
+            "mention_alias": alias,
+            "query": stripped,
+            "provider": provider,
+            "persona": persona,
+            "session_id": session_id_in,
+            "has_prior_context": bool(prior),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        # Stream node-by-node so the frontend can show progress.
+        from agents.ask_graph import get_compiled_ask_graph, AskState
+        graph = get_compiled_ask_graph()
+        initial: AskState = {
+            "role": role,
+            "query": stripped,
+            "provider": provider,
+            "session_id": session_id_in,
+            "prior_assessment": prior,
+            "rag_context": "",
+            "answer": "",
+            "claims": [],
+            "cost_usd": 0.0,
+            "activity_log": [],
+        }
+
+        t_start = datetime.now(timezone.utc)
+        final_state: dict[str, Any] = dict(initial)
+        async for event in graph.astream(initial, stream_mode="updates"):
+            for node_name, node_data in event.items():
+                if node_data is None:
+                    continue
+                for k, v in node_data.items():
+                    if k == "activity_log":
+                        final_state.setdefault("activity_log", []).extend(v)
+                    else:
+                        final_state[k] = v
+                compact = {
+                    k: v for k, v in node_data.items()
+                    if k not in ("activity_log", "rag_context")
+                }
+                compact["rag_context_chars"] = len(final_state.get("rag_context", ""))
+                await websocket.send_json({
+                    "type": "node_complete",
+                    "node": node_name,
+                    "role": role,
+                    "data": compact,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
+
+        elapsed = (datetime.now(timezone.utc) - t_start).total_seconds()
+        await websocket.send_json({
+            "type": "ask_complete",
+            "result": {
+                "role": role,
+                "agent_persona": persona,
+                "mention_alias": alias,
+                "query": stripped,
+                "provider": provider,
+                "session_id": session_id_in,
+                "answer": final_state.get("answer", ""),
+                "claims": final_state.get("claims", []),
+                "rag_context_chars": len(final_state.get("rag_context", "")),
+                "cost_usd": final_state.get("cost_usd", 0.0),
+                "activity_log": final_state.get("activity_log", []),
+                "elapsed_s": round(elapsed, 3),
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "data": {"message": str(e)[:500], "code": type(e).__name__},
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception:
+            pass
+    finally:
+        keepalive_task.cancel()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.get("/results/{session_id}")

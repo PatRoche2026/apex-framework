@@ -82,6 +82,75 @@ After a GO verdict is accepted, a second graph runs in parallel to generate a **
 
 ---
 
+## Multi-LLM Truth Tribunal
+
+Running a debate through a single foundation-model family exposes you to that model's blind spots — its training-data gaps, its priors, its refusal patterns. APEX includes a **Truth Tribunal** layer that runs the same evaluation against up to three model families in parallel (Claude / GPT-4o / Gemini), then reconciles their verdicts with a meta-judge.
+
+```
+         POST /evaluate/tribunal
+                │
+   ┌────────────┼────────────┐
+   ▼            ▼            ▼          ← asyncio.gather(return_exceptions=True)
+┌────────┐ ┌────────┐ ┌────────┐
+│ APEX   │ │ APEX   │ │ APEX   │
+│ graph  │ │ graph  │ │ graph  │           same prompts, same RAG,
+│ on     │ │ on     │ │ on     │           different provider
+│Claude  │ │GPT-4o  │ │Gemini  │
+└───┬────┘ └───┬────┘ └───┬────┘
+    │          │          │
+    └──────────┼──────────┘
+               ▼
+       ┌───────────────┐
+       │  Meta-judge   │   synthesizes 2-3 stack verdicts,
+       │ (synthesis-   │   flags singleton claims (likely
+       │  tier model)  │   hallucination vs novel insight),
+       └───────┬───────┘   issues consensus + agreement score
+               ▼
+       Consensus verdict + per-provider cost breakdown
+```
+
+**Graceful degradation.** Providers without API keys are silently skipped. Providers that error mid-run are captured in the `errors` field but do not fail the tribunal as long as at least `min_survivors` (default 2) succeed. If fewer than `min_survivors` succeed, the endpoint returns `503` with per-provider diagnostics.
+
+**Tiered routing via `agents/llm_router.py`.** Roles are bucketed into a synthesis tier (CSO, Portfolio Director) and a specialist tier (everyone else). Each provider supplies both: Anthropic uses Claude Sonnet 4 / Haiku 4.5, OpenAI uses GPT-4o / GPT-4o-mini, Google uses Gemini 2.5 Pro / Gemini 2.0 Flash. Cost accounting is per-provider and surfaces in the tribunal response.
+
+**Single-provider mode still works.** Pass `"provider": "openai"` to the regular `/evaluate` endpoint to run one evaluation against a single backend — no tribunal overhead.
+
+---
+
+## Direct agent queries (@mention routing)
+
+Not every question needs a full 90-second multi-agent debate. The `/ask` endpoint routes a single directed question to one specialist and returns in under 10 seconds.
+
+```
+POST /ask      { "query": "@scientific what is the GWAS evidence for MMP13?" }
+
+   ┌────────────────────┐
+   │ @mention parser    │    resolves @scientific → cso,
+   │ agents/mention.py  │    @clinical → cmo, @ip → ip_attorney, etc.
+   └─────────┬──────────┘
+             ▼
+   ┌────────────────────┐
+   │ RAG retrieve (k=5) │    role-specific ChromaDB collection
+   └─────────┬──────────┘
+             ▼
+   ┌────────────────────┐
+   │ Single-agent LLM   │    short 150-300 word answer, max_tokens=900
+   └─────────┬──────────┘
+             ▼
+   ┌────────────────────┐
+   │ Claim verify       │    extracts [SUPPORTED]/[UNSUPPORTED]/[UNCERTAIN]
+   │ (regex — fast)     │    reflection tokens for inline UI rendering
+   └────────────────────┘
+```
+
+**Session context.** Pass an existing `session_id` from a prior `/evaluate` run and the selected agent receives its own earlier assessment as context, so the answer builds on its prior analysis instead of starting fresh.
+
+**WebSocket variant.** `/ws/ask` streams `node_complete` events (`rag_retrieve` → `single_agent_llm` → `claim_verify`) so the UI can render progressive feedback.
+
+**Aliases.** The @mention parser accepts role synonyms (`@scientific`, `@technical`, `@clinical`, `@commercial`, `@ip`, `@director`) in addition to the canonical role keys. See `/ask/aliases` for the full list.
+
+---
+
 ## Agent Coordination Protocol
 
 | Phase | What happens | Why it matters |
@@ -101,7 +170,7 @@ After a GO verdict is accepted, a second graph runs in parallel to generate a **
 |-------|-----------|
 | Agent orchestration | LangGraph 0.2+ (StateGraph) |
 | Backend API | FastAPI 0.115+ with WebSocket streaming |
-| LLM | Claude Sonnet 4 (synthesis) + Claude Haiku 4.5 (specialists) |
+| LLM (multi-provider) | Claude Sonnet 4 / Haiku 4.5 · GPT-4o / GPT-4o-mini · Gemini 2.5 Pro / Gemini 2.0 Flash |
 | RAG / vector store | ChromaDB 0.5+ (persistent, cosine similarity) |
 | Embeddings | Voyage AI `voyage-3-lite` |
 | Research APIs | PubMed / NCBI Entrez, ClinicalTrials.gov v2, Open Targets GraphQL, Lens.org Patent |
@@ -136,9 +205,10 @@ All retrieved evidence is attributed to its source document; the director's fina
 ### Prerequisites
 
 - Python 3.11+
-- [Anthropic API key](https://console.anthropic.com/)
+- At least one LLM provider key — [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/), or [Google AI Studio](https://aistudio.google.com/)
 - [Voyage AI API key](https://www.voyageai.com/) (free tier is sufficient for the sample corpus)
 - (Optional) [Lens.org API token](https://www.lens.org/lens/user/subscriptions) for patent analysis
+- (Optional) All three provider keys — enables the Multi-LLM Truth Tribunal
 
 ### Install
 
@@ -181,7 +251,18 @@ curl http://localhost:8000/targets         # returns the 5 DEMO_TARGETS from con
 # Run a full evaluation (takes ~90 seconds)
 curl -X POST http://localhost:8000/evaluate \
   -H "Content-Type: application/json" \
-  -d '{"gene": "MMP13", "indication": "Knee Osteoarthritis"}'
+  -d '{"query": "MMP13 knee osteoarthritis"}'
+
+# Route a directed question to one agent (<10s)
+curl -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "@scientific what is the GWAS evidence for MMP13?"}'
+
+# Run the Multi-LLM Truth Tribunal (needs anthropic + openai + google keys;
+# takes ~3-4 min for 3 parallel evaluations + meta-judge)
+curl -X POST http://localhost:8000/evaluate/tribunal \
+  -H "Content-Type: application/json" \
+  -d '{"query": "MMP13 knee osteoarthritis"}'
 ```
 
 Open `http://localhost:8000/docs` in a browser for the interactive FastAPI documentation.
@@ -199,7 +280,10 @@ Open `http://localhost:8000/docs` in a browser for the interactive FastAPI docum
 | `/personas` | GET | Agent metadata (role titles, colors) |
 | `/targets` | GET | Demo target catalog (from `config.DEMO_TARGETS`) |
 | `/metrics` | GET | Framework-level stats |
-| `/evaluate` | POST | Synchronous full evaluation |
+| `/evaluate` | POST | Synchronous full evaluation (optional `provider` field) |
+| `/evaluate/tribunal` | POST | Multi-LLM Truth Tribunal — parallel evaluation on anthropic/openai/google + meta-judge synthesis |
+| `/ask` | POST | Direct @mention query to a single agent (target latency <10s) |
+| `/ask/aliases` | GET | Alias → canonical-role map for @mention UI |
 | `/results/{session_id}` | GET | Fetch completed evaluation |
 | `/sessions` | GET | List all sessions |
 | `/export/{session_id}` | GET | Download Markdown report |
@@ -216,6 +300,7 @@ Open `http://localhost:8000/docs` in a browser for the interactive FastAPI docum
 | `/ws/evaluate` | Stream evaluation events node-by-node |
 | `/ws/feedback/{session_id}` | Stream re-evaluation after feedback |
 | `/ws/plan/{session_id}` | Stream DDP planning pipeline |
+| `/ws/ask` | Stream the 3 nodes of a single-agent @mention query |
 
 ---
 
@@ -255,7 +340,7 @@ apex-framework/
 ├── .env.example
 ├── agents/
 │   ├── __init__.py           # Shared config, concurrency semaphore, role list
-│   ├── state.py              # APEXState TypedDict
+│   ├── state.py              # APEXState TypedDict (with provider field)
 │   ├── graph.py              # build_graph() + build_planning_graph()
 │   ├── scout.py              # Research Scout node
 │   ├── executives.py         # Factory for 4 advisor assessment + rebuttal nodes
@@ -263,7 +348,11 @@ apex-framework/
 │   ├── director.py           # Portfolio Director (synthesis + scoring)
 │   ├── planning.py           # DDP planning nodes (5 parallel + synthesis)
 │   ├── tools.py              # PubMed, ClinicalTrials, Open Targets, Lens.org
-│   └── prompts.py            # Generic biomedical system prompts
+│   ├── prompts.py            # Generic biomedical system prompts
+│   ├── llm_router.py         # Multi-provider factory + cost accounting
+│   ├── tribunal.py           # Truth Tribunal: 3 parallel runs + meta-judge
+│   ├── mention.py            # @mention parser (aliases → canonical role)
+│   └── ask_graph.py          # Single-agent Q&A subgraph for @mention routing
 ├── rag/
 │   ├── store.py              # ChromaDB collection setup
 │   ├── embeddings.py         # Voyage AI wrapper

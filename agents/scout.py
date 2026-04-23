@@ -34,7 +34,7 @@ CACHE_DIR = Path(__file__).resolve().parent.parent / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 # ---------------------------------------------------------------------------
-# PubMed search (reused from hw4-build/langgraph-test/biotech_agents.py)
+# PubMed search
 # ---------------------------------------------------------------------------
 
 
@@ -166,8 +166,16 @@ PAPERS:
 Select the 8 most relevant. If fewer than 8 are relevant, select all relevant ones."""
 
 
-async def _filter_relevance(papers: list[dict], query: str) -> tuple[list[dict], float]:
+async def _filter_relevance(
+    papers: list[dict], query: str, provider: str = "anthropic"
+) -> tuple[list[dict], float]:
     """Use LLM to rank and filter papers by relevance to the query.
+
+    Args:
+        papers: list of PubMed paper dicts.
+        query: the original user query.
+        provider: LLM backend (anthropic | openai | google). Defaults to
+            anthropic for backward compatibility.
 
     Returns:
         (filtered_papers, cost_usd)
@@ -186,8 +194,8 @@ async def _filter_relevance(papers: list[dict], query: str) -> tuple[list[dict],
         papers_text=papers_text,
     )
 
-    _scout_model = ROLE_MODELS.get("scout", "claude-haiku-4-5-20251001")
-    llm = ChatAnthropic(model=_scout_model, temperature=0.1, api_key=ANTHROPIC_API_KEY)
+    from agents.llm_router import get_llm as router_get_llm, estimate_cost_from_response
+    llm = router_get_llm("scout", provider=provider, temperature=0.1, max_tokens=2000)
     call_cost = 0.0
 
     async with llm_semaphore:
@@ -196,12 +204,7 @@ async def _filter_relevance(papers: list[dict], query: str) -> tuple[list[dict],
                 llm.ainvoke(prompt),
                 timeout=LLM_TIMEOUT_SECONDS,
             )
-            usage = getattr(response, "usage_metadata", None) or {}
-            call_cost = estimate_cost(
-                usage.get("input_tokens", 0),
-                usage.get("output_tokens", 0),
-                model=_scout_model,
-            )
+            call_cost = estimate_cost_from_response(provider, "scout", response)
         except (asyncio.TimeoutError, Exception):
             return papers[:8], 0.0  # Fallback: just take first 8
 
@@ -263,6 +266,7 @@ def _format_as_sources(papers: list[dict]) -> list[dict]:
 async def scout_node(state: APEXState) -> dict:
     """Research Scout: search PubMed, filter for relevance, return structured data."""
     query = state["query"]
+    provider = state.get("provider") or "anthropic"
     ts = datetime.now(timezone.utc).isoformat()
 
     # Check cache first
@@ -285,7 +289,7 @@ async def scout_node(state: APEXState) -> dict:
         }
 
     # LLM relevance filter
-    filtered_papers, filter_cost = await _filter_relevance(raw_papers, query)
+    filtered_papers, filter_cost = await _filter_relevance(raw_papers, query, provider=provider)
 
     # Enrich top 3 papers with PMC full text (lazy import to avoid circular dependency)
     from agents.tools import _pmids_to_pmc_ids, _fetch_pmc_full_text
